@@ -1,0 +1,53 @@
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+venv/
+.env
+*.log
+
+# -------------------------
+# Ignore entire frontend folder
+# -------------------------
+frontend/
+
+# -------------------------
+# Node
+# -------------------------
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+package-lock.json
+
+# -------------------------
+# Project-specific
+# -------------------------
+uploads/
+vector_store.pkl
+vector_store.pkl.faiss
+*.pkl
+sim.txt
+
+# -------------------------
+# VSCode
+# -------------------------
+.vscode/
+
+# -------------------------
+# OS junk
+# -------------------------
+.DS_Store
+Thumbs.db
+
+# -------------------------
+# Environment / secrets
+# -------------------------
+.env.local
+.env.development
+.env.production
+.env.test

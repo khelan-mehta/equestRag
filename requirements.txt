@@ -1,0 +1,21 @@
+# Core backend
+Flask
+Flask-CORS
+
+# Data processing
+pandas
+numpy
+
+# PDF processing
+PyPDF2
+
+# PDF generation
+reportlab
+
+# AI / embeddings
+openai
+sentence-transformers
+faiss-cpu
+
+# Misc utilities
+Werkzeug

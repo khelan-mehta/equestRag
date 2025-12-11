@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: equest-backend
+    env: python
+    plan: free
+
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+
+    startCommand: |
+      gunicorn app:app --bind 0.0.0.0:5000
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10
+
+    healthCheckPath: /api/health
+    autoDeploy: true

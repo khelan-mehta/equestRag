@@ -19,3 +19,4 @@ faiss-cpu
 
 # Misc utilities
 Werkzeug
+gunicorn

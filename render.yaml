@@ -9,11 +9,11 @@ services:
       pip install -r requirements.txt
 
     startCommand: |
-      gunicorn app:app --bind 0.0.0.0:5000
+      gunicorn app:app --bind 0.0.0.0:$PORT --worker-tmp-dir /dev/shm
 
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.0
+        value: 3.10.8
 
     healthCheckPath: /api/health
     autoDeploy: true

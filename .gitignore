@@ -10,10 +10,6 @@ venv/
 .env
 *.log
 
-# -------------------------
-# Ignore entire frontend folder
-# -------------------------
-frontend/
 
 # -------------------------
 # Node

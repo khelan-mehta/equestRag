@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import {
   Upload,
   Send,
@@ -24,6 +30,9 @@ import {
   Activity,
   Menu,
   PanelLeftClose,
+  Sparkles,
+  Copy,
+  Check,
 } from "lucide-react";
 import {
   PieChart,
@@ -41,8 +50,7 @@ import {
   Area,
 } from "recharts";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL || "/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "/api";
 
 const CHART_COLORS = [
   "#6366f1",
@@ -101,6 +109,333 @@ function formatNumber(val) {
   return val % 1 === 0 ? val.toLocaleString() : val.toFixed(2);
 }
 
+// ── Markdown / LLM Output Parser ──────────────────────────────────
+// Parses common LLM output patterns: headers, bold, italic, code blocks,
+// inline code, lists, tables, and horizontal rules into React elements.
+
+function ParsedMarkdown({ content }) {
+  const blocks = useMemo(() => parseBlocks(content), [content]);
+  return <div className="space-y-2">{blocks}</div>;
+}
+
+function parseBlocks(text) {
+  if (!text) return null;
+  const lines = text.split("\n");
+  const elements = [];
+  let i = 0;
+  let key = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block
+    if (line.trimStart().startsWith("```")) {
+      const lang = line.trimStart().slice(3).trim();
+      const codeLines = [];
+      i++;
+      while (i < lines.length && !lines[i].trimStart().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing ```
+      elements.push(
+        <CodeBlock key={key++} code={codeLines.join("\n")} language={lang} />,
+      );
+      continue;
+    }
+
+    // Table detection (line with | separators)
+    if (line.includes("|") && line.trim().startsWith("|")) {
+      const tableLines = [];
+      while (
+        i < lines.length &&
+        lines[i].includes("|") &&
+        lines[i].trim().startsWith("|")
+      ) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      if (tableLines.length >= 2) {
+        elements.push(<MarkdownTable key={key++} lines={tableLines} />);
+        continue;
+      }
+      // fallback: not really a table
+      i -= tableLines.length;
+    }
+
+    // Heading
+    const headingMatch = line.match(/^(#{1,4})\s+(.+)/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const text = headingMatch[2];
+      const Tag = `h${Math.min(level + 1, 6)}`; // offset so # => h2 in chat context
+      const sizes = {
+        2: "text-base font-bold",
+        3: "text-sm font-bold",
+        4: "text-sm font-semibold",
+        5: "text-sm font-medium",
+        6: "text-sm font-medium",
+      };
+      elements.push(
+        <Tag
+          key={key++}
+          className={`${sizes[Math.min(level + 1, 6)] || "text-sm font-semibold"} text-slate-800 mt-3 mb-1`}
+        >
+          {renderInline(text)}
+        </Tag>,
+      );
+      i++;
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      elements.push(<hr key={key++} className="border-slate-200 my-2" />);
+      i++;
+      continue;
+    }
+
+    // Unordered list
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const listItems = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        listItems.push(lines[i].replace(/^\s*[-*+]\s+/, ""));
+        i++;
+      }
+      elements.push(
+        <ul
+          key={key++}
+          className="list-disc list-inside space-y-1 text-sm text-slate-700 ml-1"
+        >
+          {listItems.map((item, j) => (
+            <li key={j} className="leading-relaxed">
+              {renderInline(item)}
+            </li>
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+
+    // Ordered list
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const listItems = [];
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+        listItems.push(lines[i].replace(/^\s*\d+[.)]\s+/, ""));
+        i++;
+      }
+      elements.push(
+        <ol
+          key={key++}
+          className="list-decimal list-inside space-y-1 text-sm text-slate-700 ml-1"
+        >
+          {listItems.map((item, j) => (
+            <li key={j} className="leading-relaxed">
+              {renderInline(item)}
+            </li>
+          ))}
+        </ol>,
+      );
+      continue;
+    }
+
+    // Blockquote
+    if (line.trimStart().startsWith(">")) {
+      const quoteLines = [];
+      while (i < lines.length && lines[i].trimStart().startsWith(">")) {
+        quoteLines.push(lines[i].replace(/^\s*>\s?/, ""));
+        i++;
+      }
+      elements.push(
+        <blockquote
+          key={key++}
+          className="border-l-3 border-indigo-400 pl-3 py-1 text-sm text-slate-600 italic bg-indigo-50/40 rounded-r-lg"
+        >
+          {renderInline(quoteLines.join(" "))}
+        </blockquote>,
+      );
+      continue;
+    }
+
+    // Empty line
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    // Regular paragraph — collect consecutive non-special lines
+    const paraLines = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() !== "" &&
+      !lines[i].trimStart().startsWith("```") &&
+      !lines[i].match(/^#{1,4}\s+/) &&
+      !/^\s*[-*+]\s+/.test(lines[i]) &&
+      !/^\s*\d+[.)]\s+/.test(lines[i]) &&
+      !lines[i].trimStart().startsWith(">") &&
+      !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[i].trim()) &&
+      !(lines[i].includes("|") && lines[i].trim().startsWith("|"))
+    ) {
+      paraLines.push(lines[i]);
+      i++;
+    }
+    if (paraLines.length > 0) {
+      elements.push(
+        <p key={key++} className="text-sm text-slate-800 leading-relaxed">
+          {renderInline(paraLines.join(" "))}
+        </p>,
+      );
+    }
+  }
+
+  return elements;
+}
+
+// Inline formatting: **bold**, *italic*, `code`, [links](url)
+function renderInline(text) {
+  if (!text) return null;
+  // Split by patterns, preserving delimiters
+  const tokens = [];
+  // Regex to match: **bold**, *italic*, `code`, [text](url)
+  const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    // Text before match
+    if (match.index > lastIndex) {
+      tokens.push(text.slice(lastIndex, match.index));
+    }
+    if (match[2]) {
+      // **bold**
+      tokens.push(
+        <strong key={match.index} className="font-semibold text-slate-900">
+          {match[2]}
+        </strong>,
+      );
+    } else if (match[3]) {
+      // *italic*
+      tokens.push(
+        <em key={match.index} className="italic">
+          {match[3]}
+        </em>,
+      );
+    } else if (match[4]) {
+      // `code`
+      tokens.push(
+        <code
+          key={match.index}
+          className="px-1.5 py-0.5 bg-slate-100 text-indigo-700 rounded text-xs font-mono"
+        >
+          {match[4]}
+        </code>,
+      );
+    } else if (match[5] && match[6]) {
+      // [text](url)
+      tokens.push(
+        <a
+          key={match.index}
+          href={match[6]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-indigo-600 underline underline-offset-2 hover:text-indigo-800"
+        >
+          {match[5]}
+        </a>,
+      );
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    tokens.push(text.slice(lastIndex));
+  }
+
+  return tokens.length === 0 ? text : tokens;
+}
+
+// ── Code Block with copy ──────────────────────────────────────────
+function CodeBlock({ code, language }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-900 my-2">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-slate-800 text-xs text-slate-400">
+        <span>{language || "code"}</span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 hover:text-slate-200 transition-colors"
+        >
+          {copied ? (
+            <>
+              <Check size={12} /> Copied
+            </>
+          ) : (
+            <>
+              <Copy size={12} /> Copy
+            </>
+          )}
+        </button>
+      </div>
+      <pre className="p-3 overflow-x-auto text-xs leading-relaxed">
+        <code className="text-slate-100 font-mono">{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+// ── Markdown Table ────────────────────────────────────────────────
+function MarkdownTable({ lines }) {
+  const parseRow = (line) =>
+    line
+      .split("|")
+      .map((c) => c.trim())
+      .filter((c) => c !== "");
+
+  const headers = parseRow(lines[0]);
+  // Skip separator line (index 1 if it's dashes)
+  const isSep = (line) => /^[\s|:-]+$/.test(line);
+  const dataStart = lines.length > 1 && isSep(lines[1]) ? 2 : 1;
+  const rows = lines.slice(dataStart).map(parseRow);
+
+  return (
+    <div className="overflow-x-auto my-2 rounded-lg border border-slate-200">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="bg-slate-50">
+            {headers.map((h, i) => (
+              <th
+                key={i}
+                className="px-3 py-2 text-left text-xs font-semibold text-slate-600 border-b border-slate-200"
+              >
+                {renderInline(h)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50/50"}>
+              {row.map((cell, j) => (
+                <td
+                  key={j}
+                  className="px-3 py-2 text-slate-700 border-b border-slate-100"
+                >
+                  {renderInline(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── Notification ──────────────────────────────────────────────────
 function Notification({ notification, onClose }) {
   if (!notification) return null;
@@ -109,20 +444,18 @@ function Notification({ notification, onClose }) {
     error: "bg-rose-50 border-rose-400 text-rose-800",
     info: "bg-sky-50 border-sky-400 text-sky-800",
   };
-  const icons = {
-    success: CheckCircle,
-    error: AlertCircle,
-    info: AlertCircle,
-  };
+  const icons = { success: CheckCircle, error: AlertCircle, info: AlertCircle };
   const Icon = icons[notification.type] || AlertCircle;
-
   return (
     <div
       className={`fixed top-4 right-4 z-50 flex items-center gap-3 px-4 py-3 rounded-lg border shadow-lg max-w-md animate-in ${styles[notification.type]}`}
     >
       <Icon size={18} className="flex-shrink-0" />
       <span className="text-sm font-medium flex-1">{notification.message}</span>
-      <button onClick={onClose} className="flex-shrink-0 opacity-60 hover:opacity-100">
+      <button
+        onClick={onClose}
+        className="flex-shrink-0 opacity-60 hover:opacity-100"
+      >
         <X size={16} />
       </button>
     </div>
@@ -131,7 +464,6 @@ function Notification({ notification, onClose }) {
 
 // ── Main App ──────────────────────────────────────────────────────
 function App() {
-  // State
   const [sessionId, setSessionId] = useState(null);
   const [activeTab, setActiveTab] = useState("chat");
   const [files, setFiles] = useState({});
@@ -145,6 +477,8 @@ function App() {
   const [metrics, setMetrics] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
+  const [searchExplanation, setSearchExplanation] = useState("");
+  const [searchExplaining, setSearchExplaining] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [notification, setNotification] = useState(null);
@@ -154,30 +488,23 @@ function App() {
   const chatEndRef = useRef(null);
   const notifTimeout = useRef(null);
 
-  // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory, loading]);
 
-  // Auto-dismiss notification
   const notify = useCallback((type, message) => {
     if (notifTimeout.current) clearTimeout(notifTimeout.current);
     setNotification({ type, message });
     notifTimeout.current = setTimeout(() => setNotification(null), 5000);
   }, []);
 
-  // API helper
   const apiFetch = useCallback(
     async (path, options = {}) => {
       const headers = { ...options.headers };
       if (sessionId) headers["X-Session-ID"] = sessionId;
-      const res = await fetch(`${API_BASE_URL}${path}`, {
-        ...options,
-        headers,
-      });
-      return res;
+      return fetch(`${API_BASE_URL}${path}`, { ...options, headers });
     },
-    [sessionId]
+    [sessionId],
   );
 
   // ── File Handling ─────────────────────────────────────────
@@ -237,7 +564,10 @@ function App() {
         setMetrics(data.metrics);
         setFilesProcessed(data.files_processed || []);
         setProcessProgress(100);
-        notify("success", `Processed ${data.files_processed?.length || 0} files with ${data.num_chunks} chunks`);
+        notify(
+          "success",
+          `Processed ${data.files_processed?.length || 0} files with ${data.num_chunks} chunks`,
+        );
       } else {
         throw new Error(data.error || "Processing failed");
       }
@@ -293,10 +623,13 @@ function App() {
     }
   };
 
-  // ── Search ────────────────────────────────────────────────
+  // ── Search with LLM Explanation ───────────────────────────
   const searchDocuments = async () => {
     if (!searchQuery.trim()) return;
     setLoading(true);
+    setSearchExplanation("");
+    setSearchResults([]);
+
     try {
       const res = await apiFetch("/search", {
         method: "POST",
@@ -304,13 +637,55 @@ function App() {
         body: JSON.stringify({ query: searchQuery }),
       });
       const data = await res.json();
-      setSearchResults(data.results || []);
+      const results = data.results || [];
+      setSearchResults(results);
+
+      // If we have results, ask the LLM to explain/synthesize them
+      if (results.length > 0) {
+        setSearchExplaining(true);
+        try {
+          const synthesisPrompt = buildSearchSynthesisPrompt(
+            searchQuery,
+            results,
+          );
+          const llmRes = await apiFetch("/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: synthesisPrompt, api_key: apiKey }),
+          });
+          const llmData = await llmRes.json();
+          if (llmData.success) {
+            setSearchExplanation(llmData.response);
+          }
+        } catch {
+          // Silently fail — raw results are still shown
+        } finally {
+          setSearchExplaining(false);
+        }
+      }
     } catch (err) {
       notify("error", `Search failed: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
+
+  function buildSearchSynthesisPrompt(query, results) {
+    const snippets = results
+      .map(
+        (r, i) =>
+          `[Document ${i + 1}: ${r.filename} (${r.type}, relevance: ${(r.score * 100).toFixed(1)}%)]\n${r.text}`,
+      )
+      .join("\n\n");
+
+    return (
+      `Based on the following retrieved document excerpts, provide a concise, helpful synthesis that directly answers or addresses the user's search query.\n\n` +
+      `**User's query:** "${query}"\n\n` +
+      `**Retrieved excerpts:**\n${snippets}\n\n` +
+      `Instructions: Synthesize the key findings from these documents. Highlight the most relevant information, note any important values or metrics mentioned, and explain how the documents relate to the query. ` +
+      `If the excerpts contain contradictory or complementary information, point that out. Be concise but thorough. Use markdown formatting for clarity.`
+    );
+  }
 
   // ── Export ────────────────────────────────────────────────
   const exportData = async (format) => {
@@ -320,7 +695,6 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: apiKey }),
       });
-
       if (format === "json") {
         const data = await res.json();
         const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -348,8 +722,8 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
-  // ── Derive chart data from buildingData ───────────────────
-  const chartData = React.useMemo(() => {
+  // ── Chart data ────────────────────────────────────────────
+  const chartData = useMemo(() => {
     if (!buildingData) return {};
     const charts = {};
 
@@ -374,14 +748,8 @@ function App() {
 
     if (buildingData.ls_c) {
       charts.peakLoads = [
-        {
-          name: "Cooling",
-          value: buildingData.ls_c.cooling_load_kbtu_h || 0,
-        },
-        {
-          name: "Heating",
-          value: buildingData.ls_c.heating_load_kbtu_h || 0,
-        },
+        { name: "Cooling", value: buildingData.ls_c.cooling_load_kbtu_h || 0 },
+        { name: "Heating", value: buildingData.ls_c.heating_load_kbtu_h || 0 },
       ].filter((d) => d.value > 0);
     }
 
@@ -397,7 +765,6 @@ function App() {
     return charts;
   }, [buildingData]);
 
-  // ── Example questions ─────────────────────────────────────
   const exampleQuestions = [
     "What is the building's Energy Use Intensity (EUI)?",
     "What are the peak cooling and heating loads?",
@@ -406,7 +773,6 @@ function App() {
     "Which month has the highest energy consumption?",
   ];
 
-  // ── Tabs config ───────────────────────────────────────────
   const tabs = [
     { id: "chat", label: "AI Chat", icon: MessageSquare },
     { id: "viz", label: "Visualizations", icon: BarChart3 },
@@ -416,15 +782,15 @@ function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden">
-      <Notification notification={notification} onClose={() => setNotification(null)} />
+      <Notification
+        notification={notification}
+        onClose={() => setNotification(null)}
+      />
 
       {/* ── Sidebar ───────────────────────────────────────── */}
       <aside
-        className={`${
-          sidebarOpen ? "w-80" : "w-0"
-        } bg-slate-900 text-white flex flex-col transition-all duration-300 overflow-hidden flex-shrink-0`}
+        className={`${sidebarOpen ? "w-80" : "w-0"} bg-slate-900 text-white flex flex-col transition-all duration-300 overflow-hidden flex-shrink-0`}
       >
-        {/* Brand */}
         <div className="p-5 border-b border-slate-700/50">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center">
@@ -447,7 +813,11 @@ function App() {
               <span className="flex items-center gap-1.5">
                 <Key size={12} /> OpenAI API Key
               </span>
-              {apiKeyVisible ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              {apiKeyVisible ? (
+                <ChevronDown size={14} />
+              ) : (
+                <ChevronRight size={14} />
+              )}
             </button>
             {apiKeyVisible && (
               <input
@@ -480,7 +850,10 @@ function App() {
                   >
                     {files[key] ? (
                       <>
-                        <CheckCircle size={14} className="text-emerald-400 flex-shrink-0" />
+                        <CheckCircle
+                          size={14}
+                          className="text-emerald-400 flex-shrink-0"
+                        />
                         <span className="truncate">{files[key].name}</span>
                       </>
                     ) : (
@@ -499,7 +872,6 @@ function App() {
                 </div>
               ))}
 
-              {/* Additional docs */}
               <div>
                 <label className="block text-xs text-slate-300 mb-1 font-medium">
                   Additional Documents
@@ -513,7 +885,10 @@ function App() {
                 >
                   {additionalDocs.length > 0 ? (
                     <>
-                      <CheckCircle size={14} className="text-emerald-400 flex-shrink-0" />
+                      <CheckCircle
+                        size={14}
+                        className="text-emerald-400 flex-shrink-0"
+                      />
                       <span>{additionalDocs.length} file(s) selected</span>
                     </>
                   ) : (
@@ -534,7 +909,6 @@ function App() {
             </div>
           </div>
 
-          {/* Process Button */}
           <button
             onClick={processFiles}
             disabled={processing || totalFiles === 0}
@@ -551,13 +925,14 @@ function App() {
               </>
             ) : (
               <>
-                <Upload size={16} />
-                Process {totalFiles > 0 ? `${totalFiles} File${totalFiles > 1 ? "s" : ""}` : "Files"}
+                <Upload size={16} /> Process{" "}
+                {totalFiles > 0
+                  ? `${totalFiles} File${totalFiles > 1 ? "s" : ""}`
+                  : "Files"}
               </>
             )}
           </button>
 
-          {/* Session Status */}
           {buildingData && (
             <div className="p-3 bg-emerald-900/30 border border-emerald-800/50 rounded-lg">
               <p className="text-sm font-medium text-emerald-300 flex items-center gap-2">
@@ -571,7 +946,6 @@ function App() {
           )}
         </div>
 
-        {/* Export */}
         {buildingData && (
           <div className="p-4 border-t border-slate-700/50 space-y-2">
             <button
@@ -592,7 +966,6 @@ function App() {
 
       {/* ── Main Content ──────────────────────────────────── */}
       <main className="flex-1 flex flex-col min-w-0">
-        {/* Top Bar */}
         <header className="bg-white border-b border-slate-200 px-4 py-2 flex items-center gap-4 flex-shrink-0">
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -600,7 +973,6 @@ function App() {
           >
             {sidebarOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
           </button>
-
           <nav className="flex gap-1">
             {tabs.map(({ id, label, icon: Icon }) => (
               <button
@@ -617,7 +989,6 @@ function App() {
               </button>
             ))}
           </nav>
-
           <div className="flex-1" />
           {sessionId && (
             <span className="text-xs text-slate-400 hidden md:block">
@@ -626,7 +997,6 @@ function App() {
           )}
         </header>
 
-        {/* Content Area */}
         <div className="flex-1 overflow-y-auto">
           {/* ── Chat Tab ──────────────────────────── */}
           {activeTab === "chat" && (
@@ -648,7 +1018,6 @@ function App() {
                 </div>
               ) : (
                 <>
-                  {/* Messages */}
                   <div className="flex-1 overflow-y-auto p-6 space-y-4">
                     {chatHistory.length === 0 && (
                       <div className="space-y-3">
@@ -672,9 +1041,7 @@ function App() {
                     {chatHistory.map((msg, idx) => (
                       <div
                         key={idx}
-                        className={`flex gap-3 ${
-                          msg.type === "user" ? "justify-end" : "justify-start"
-                        }`}
+                        className={`flex gap-3 ${msg.type === "user" ? "justify-end" : "justify-start"}`}
                       >
                         {msg.type !== "user" && (
                           <div
@@ -685,7 +1052,10 @@ function App() {
                             }`}
                           >
                             {msg.type === "error" ? (
-                              <AlertCircle size={16} className="text-rose-600" />
+                              <AlertCircle
+                                size={16}
+                                className="text-rose-600"
+                              />
                             ) : (
                               <Brain size={16} className="text-white" />
                             )}
@@ -696,16 +1066,27 @@ function App() {
                             msg.type === "user"
                               ? "bg-indigo-600 text-white"
                               : msg.type === "error"
-                              ? "bg-rose-50 border border-rose-200 text-rose-800"
-                              : "bg-white border border-slate-200 text-slate-800"
+                                ? "bg-rose-50 border border-rose-200 text-rose-800"
+                                : "bg-white border border-slate-200 text-slate-800"
                           }`}
                         >
-                          <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                            {msg.content}
-                          </div>
+                          {/* Use parsed markdown for assistant messages, plain for user */}
+                          {msg.type === "user" ? (
+                            <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                              {msg.content}
+                            </div>
+                          ) : msg.type === "error" ? (
+                            <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                              {msg.content}
+                            </div>
+                          ) : (
+                            <ParsedMarkdown content={msg.content} />
+                          )}
                           {msg.sources?.length > 0 && (
                             <div className="mt-2 pt-2 border-t border-slate-200/60">
-                              <p className="text-xs text-slate-500 mb-1">Sources:</p>
+                              <p className="text-xs text-slate-500 mb-1">
+                                Sources:
+                              </p>
                               <div className="flex flex-wrap gap-1">
                                 {msg.sources.map((s, i) => (
                                   <span
@@ -725,7 +1106,10 @@ function App() {
                     {loading && (
                       <div className="flex gap-3">
                         <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center">
-                          <Loader2 size={16} className="text-white animate-spin" />
+                          <Loader2
+                            size={16}
+                            className="text-white animate-spin"
+                          />
                         </div>
                         <div className="bg-white border border-slate-200 rounded-xl px-4 py-3">
                           <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -738,14 +1122,15 @@ function App() {
                     <div ref={chatEndRef} />
                   </div>
 
-                  {/* Input */}
                   <div className="p-4 border-t border-slate-200 bg-white">
                     <div className="flex gap-2 max-w-4xl mx-auto">
                       <input
                         type="text"
                         value={chatInput}
                         onChange={(e) => setChatInput(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
+                        onKeyDown={(e) =>
+                          e.key === "Enter" && !e.shiftKey && sendMessage()
+                        }
                         placeholder="Ask about your building's energy performance..."
                         className="flex-1 px-4 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm"
                       />
@@ -789,7 +1174,6 @@ function App() {
                 />
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* End-Use Pie */}
                   {chartData.endUse && (
                     <ChartCard title="Annual Energy by End-Use">
                       <ResponsiveContainer width="100%" height={300}>
@@ -815,23 +1199,29 @@ function App() {
                             ))}
                           </Pie>
                           <Tooltip
-                            formatter={(val) => `${Number(val).toLocaleString()}`}
+                            formatter={(val) =>
+                              `${Number(val).toLocaleString()}`
+                            }
                           />
                         </PieChart>
                       </ResponsiveContainer>
                     </ChartCard>
                   )}
 
-                  {/* Monthly Totals Bar */}
                   {chartData.monthly && (
                     <ChartCard title="Monthly Energy Consumption">
                       <ResponsiveContainer width="100%" height={300}>
                         <BarChart data={chartData.monthly}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            stroke="#e2e8f0"
+                          />
                           <XAxis dataKey="Month" tick={{ fontSize: 12 }} />
                           <YAxis tick={{ fontSize: 12 }} />
                           <Tooltip
-                            formatter={(val) => `${Number(val).toLocaleString()}`}
+                            formatter={(val) =>
+                              `${Number(val).toLocaleString()}`
+                            }
                           />
                           <Bar
                             dataKey="Total"
@@ -843,16 +1233,20 @@ function App() {
                     </ChartCard>
                   )}
 
-                  {/* Monthly Stacked Area */}
                   {chartData.monthly && (
                     <ChartCard title="Monthly Energy Breakdown">
                       <ResponsiveContainer width="100%" height={300}>
                         <AreaChart data={chartData.monthly}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            stroke="#e2e8f0"
+                          />
                           <XAxis dataKey="Month" tick={{ fontSize: 12 }} />
                           <YAxis tick={{ fontSize: 12 }} />
                           <Tooltip
-                            formatter={(val) => `${Number(val).toLocaleString()}`}
+                            formatter={(val) =>
+                              `${Number(val).toLocaleString()}`
+                            }
                           />
                           <Legend />
                           <Area
@@ -900,16 +1294,20 @@ function App() {
                     </ChartCard>
                   )}
 
-                  {/* Peak Loads */}
                   {chartData.peakLoads && (
                     <ChartCard title="Peak Load Comparison (kBTU/h)">
                       <ResponsiveContainer width="100%" height={300}>
                         <BarChart data={chartData.peakLoads}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            stroke="#e2e8f0"
+                          />
                           <XAxis dataKey="name" tick={{ fontSize: 12 }} />
                           <YAxis tick={{ fontSize: 12 }} />
                           <Tooltip
-                            formatter={(val) => `${Number(val).toLocaleString()} kBTU/h`}
+                            formatter={(val) =>
+                              `${Number(val).toLocaleString()} kBTU/h`
+                            }
                           />
                           <Bar dataKey="value" radius={[6, 6, 0, 0]}>
                             {chartData.peakLoads.map((_, i) => (
@@ -924,12 +1322,14 @@ function App() {
                     </ChartCard>
                   )}
 
-                  {/* EUI Benchmark */}
                   {chartData.euiBenchmark && (
                     <ChartCard title="EUI Benchmark Comparison">
                       <ResponsiveContainer width="100%" height={300}>
                         <BarChart data={chartData.euiBenchmark}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            stroke="#e2e8f0"
+                          />
                           <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                           <YAxis
                             tick={{ fontSize: 12 }}
@@ -941,18 +1341,23 @@ function App() {
                             }}
                           />
                           <Tooltip
-                            formatter={(val) => `${Number(val).toFixed(2)} kWh/sqft/yr`}
+                            formatter={(val) =>
+                              `${Number(val).toFixed(2)} kWh/sqft/yr`
+                            }
                           />
                           <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                            {chartData.euiBenchmark.map((entry, i) => (
+                            {chartData.euiBenchmark.map((_, i) => (
                               <Cell
                                 key={i}
                                 fill={
                                   i === 0
                                     ? "#6366f1"
-                                    : ["#10b981", "#f59e0b", "#f97316", "#ef4444"][
-                                        i - 1
-                                      ] || "#94a3b8"
+                                    : [
+                                        "#10b981",
+                                        "#f59e0b",
+                                        "#f97316",
+                                        "#ef4444",
+                                      ][i - 1] || "#94a3b8"
                                 }
                               />
                             ))}
@@ -977,11 +1382,11 @@ function App() {
                 />
               ) : (
                 <div className="space-y-6">
-                  {/* Metric Cards */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     {Object.entries(metrics).map(([key, value]) => {
                       const Icon = METRIC_ICONS[key] || Activity;
-                      const label = METRIC_LABELS[key] || key.replace(/_/g, " ");
+                      const label =
+                        METRIC_LABELS[key] || key.replace(/_/g, " ");
                       const unit = METRIC_UNITS[key] || "";
                       return (
                         <div
@@ -1001,28 +1406,48 @@ function App() {
                             {formatNumber(value)}
                           </p>
                           {unit && (
-                            <p className="text-xs text-slate-400 mt-1">{unit}</p>
+                            <p className="text-xs text-slate-400 mt-1">
+                              {unit}
+                            </p>
                           )}
                         </div>
                       );
                     })}
                   </div>
 
-                  {/* Building Data Summary */}
                   {buildingData && (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                      {buildingData.bepu && typeof buildingData.bepu === "object" && !Array.isArray(buildingData.bepu) && (
-                        <DataSection title="Building Performance (BEPU)" data={buildingData.bepu} />
-                      )}
-                      {buildingData.ls_c && typeof buildingData.ls_c === "object" && !Array.isArray(buildingData.ls_c) && (
-                        <DataSection title="Peak Loads (LS-C)" data={buildingData.ls_c} />
-                      )}
-                      {buildingData.es_d && typeof buildingData.es_d === "object" && !Array.isArray(buildingData.es_d) && (
-                        <DataSection title="Energy Costs (ES-D)" data={buildingData.es_d} />
-                      )}
-                      {buildingData.metadata && typeof buildingData.metadata === "object" && (
-                        <DataSection title="Project Metadata" data={buildingData.metadata} />
-                      )}
+                      {buildingData.bepu &&
+                        typeof buildingData.bepu === "object" &&
+                        !Array.isArray(buildingData.bepu) && (
+                          <DataSection
+                            title="Building Performance (BEPU)"
+                            data={buildingData.bepu}
+                          />
+                        )}
+                      {buildingData.ls_c &&
+                        typeof buildingData.ls_c === "object" &&
+                        !Array.isArray(buildingData.ls_c) && (
+                          <DataSection
+                            title="Peak Loads (LS-C)"
+                            data={buildingData.ls_c}
+                          />
+                        )}
+                      {buildingData.es_d &&
+                        typeof buildingData.es_d === "object" &&
+                        !Array.isArray(buildingData.es_d) && (
+                          <DataSection
+                            title="Energy Costs (ES-D)"
+                            data={buildingData.es_d}
+                          />
+                        )}
+                      {buildingData.metadata &&
+                        typeof buildingData.metadata === "object" && (
+                          <DataSection
+                            title="Project Metadata"
+                            data={buildingData.metadata}
+                          />
+                        )}
                     </div>
                   )}
                 </div>
@@ -1030,9 +1455,9 @@ function App() {
             </div>
           )}
 
-          {/* ── Search Tab ────────────────────────── */}
+          {/* ── Search Tab (Enhanced with LLM synthesis) ──── */}
           {activeTab === "search" && (
-            <div className="p-6 max-w-4xl mx-auto">
+            <div className="p-6 max-w-4xl mx-auto space-y-4">
               <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
                 <h2 className="text-lg font-semibold text-slate-800 mb-4">
                   Document Search
@@ -1065,43 +1490,70 @@ function App() {
                     Process files to enable document search.
                   </p>
                 )}
+              </div>
 
-                {searchResults.length > 0 && (
-                  <div className="space-y-3">
-                    {searchResults.map((result, idx) => (
-                      <div
-                        key={idx}
-                        className="border border-slate-200 rounded-lg p-4 hover:border-slate-300 transition-colors"
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
-                              {result.type}
-                            </span>
-                            <span className="text-sm font-medium text-slate-700">
-                              {result.filename}
-                            </span>
-                          </div>
-                          <span
-                            className={`text-xs font-medium px-2 py-0.5 rounded ${
-                              result.score > 0.7
-                                ? "bg-emerald-100 text-emerald-700"
-                                : result.score > 0.4
-                                ? "bg-amber-100 text-amber-700"
-                                : "bg-slate-100 text-slate-600"
-                            }`}
-                          >
-                            {(result.score * 100).toFixed(1)}% match
+              {/* LLM Synthesis Card */}
+              {(searchExplaining || searchExplanation) && (
+                <div className="bg-gradient-to-br from-indigo-50 to-white rounded-xl border border-indigo-200 shadow-sm p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
+                      <Sparkles size={14} className="text-white" />
+                    </div>
+                    <h3 className="text-sm font-semibold text-indigo-900">
+                      AI Analysis of Results
+                    </h3>
+                  </div>
+                  {searchExplaining ? (
+                    <div className="flex items-center gap-2 text-sm text-indigo-600 py-4">
+                      <Loader2 size={16} className="animate-spin" />
+                      Synthesizing search results...
+                    </div>
+                  ) : (
+                    <ParsedMarkdown content={searchExplanation} />
+                  )}
+                </div>
+              )}
+
+              {/* Raw Results */}
+              {searchResults.length > 0 && (
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold text-slate-600 flex items-center gap-2">
+                    <FileText size={14} />
+                    Retrieved Documents ({searchResults.length})
+                  </h3>
+                  {searchResults.map((result, idx) => (
+                    <div
+                      key={idx}
+                      className="bg-white border border-slate-200 rounded-lg p-4 hover:border-slate-300 transition-colors"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                            {result.type}
+                          </span>
+                          <span className="text-sm font-medium text-slate-700">
+                            {result.filename}
                           </span>
                         </div>
-                        <p className="text-sm text-slate-600 leading-relaxed">
-                          {result.text}
-                        </p>
+                        <span
+                          className={`text-xs font-medium px-2 py-0.5 rounded ${
+                            result.score > 0.7
+                              ? "bg-emerald-100 text-emerald-700"
+                              : result.score > 0.4
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {(result.score * 100).toFixed(1)}% match
+                        </span>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                      <p className="text-sm text-slate-600 leading-relaxed">
+                        {result.text}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1146,7 +1598,9 @@ function DataSection({ title, data }) {
               {key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
             </span>
             <span className="font-medium text-slate-800">
-              {typeof value === "number" ? value.toLocaleString() : String(value)}
+              {typeof value === "number"
+                ? value.toLocaleString()
+                : String(value)}
             </span>
           </div>
         ))}

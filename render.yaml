@@ -7,13 +7,26 @@ services:
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
+      cd frontend && npm install && npm run build
 
     startCommand: |
-      gunicorn app:app --bind 0.0.0.0:$PORT --worker-tmp-dir /dev/shm
+      gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --worker-tmp-dir /dev/shm --timeout 120
 
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.8
+        value: "3.10.8"
+      - key: NODE_VERSION
+        value: "20"
+      - key: FLASK_DEBUG
+        value: "false"
+      - key: LOG_LEVEL
+        value: "INFO"
+      - key: MAX_UPLOAD_MB
+        value: "50"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: "gpt-4o-mini"
 
     healthCheckPath: /api/health
     autoDeploy: true

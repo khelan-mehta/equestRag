@@ -5,6 +5,7 @@ Flask-CORS
 # Data processing
 pandas
 numpy
+openpyxl
 
 # PDF processing
 PyPDF2

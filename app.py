@@ -88,8 +88,9 @@ MAX_REQUEST_SIZE = 200 * 1024 * 1024  # 200 MB total
 SESSION_TTL = timedelta(hours=4)
 ALLOWED_EXTENSIONS = {".txt", ".pdf", ".csv", ".xlsx"}
 ALLOWED_ORIGINS = os.environ.get(
-    "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,https://equest-rag.vercel.app"
 ).split(",")
+ALLOWED_ORIGINS = [o.strip() for o in ALLOWED_ORIGINS]
 
 # ---------------------------------------------------------------------------
 # Data classes
